@@ -1,0 +1,11 @@
+[package]
+name = "processor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.53.2", features = ["macros", "rt-multi-thread"] }
+csv = "1.4.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
+anyhow = "1.0"
