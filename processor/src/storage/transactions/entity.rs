@@ -1,5 +1,5 @@
 use rusqlite::Row;
-use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
+use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionType {
@@ -8,6 +8,19 @@ pub enum TransactionType {
     Dispute,
     Resolve,
     Chargeback,
+}
+
+impl ToSql for TransactionType {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            Self::Deposit => "deposit",
+            Self::Withdrawal => "withdrawal",
+            Self::Dispute => "dispute",
+            Self::Resolve => "resolve",
+            Self::Chargeback => "chargeback",
+        }
+        .into())
+    }
 }
 
 impl FromSql for TransactionType {
