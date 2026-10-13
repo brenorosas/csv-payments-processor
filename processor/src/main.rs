@@ -1,11 +1,14 @@
-mod transaction_csv;
+use std::sync::Arc;
 
+use processor::processor_service::service::ProcessorService;
 use processor::storage;
-use rusqlite::Connection;
+use processor::transaction_csv::TransactionCsv;
 use storage::client::repository::SqliteClientRepository;
 use storage::transactions::repository::SqliteTransactionRepository;
 use tempfile::NamedTempFile;
 use tokio_rusqlite::Connection;
+
+const BATCH_SIZE: usize = 1000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -13,8 +16,11 @@ async fn main() -> anyhow::Result<()> {
     let conn = Connection::open(file.path()).await?;
     storage::db::run_migrations(&conn).await?;
 
-    let client_repository = SqliteClientRepository::new(conn.clone());
-    let transaction_repository = SqliteTransactionRepository::new(conn.clone());
+    let processor_service = ProcessorService::new(
+        conn,
+        Arc::new(SqliteClientRepository),
+        Arc::new(SqliteTransactionRepository),
+    );
 
     let path = std::env::args()
         .nth(1)
@@ -23,9 +29,15 @@ async fn main() -> anyhow::Result<()> {
         .trim(csv::Trim::All)
         .from_path(path)?;
 
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+
     for record in reader.deserialize::<TransactionCsv>() {
         let transaction = record?;
-        println!("{transaction:?}");
+        batch.push(transaction);
+        if batch.len() >= BATCH_SIZE {
+            processor_service.process_transactions(&batch).await?;
+            batch.clear();
+        }
     }
 
     println!("database ready at {}", file.path().display());
