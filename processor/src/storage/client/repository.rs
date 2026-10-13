@@ -9,6 +9,7 @@ use crate::storage::error::RepositoryError;
 const UPSERT: &str = include_str!("sql/upsert.sql");
 const GET_CLIENTS: &str = include_str!("sql/get_clients.sql");
 
+#[cfg_attr(feature = "test-utils", mockall::automock)]
 pub trait ClientRepository: Send + Sync {
     fn upsert(&self, conn: &Connection, clients: &[NewClient])
     -> Result<(), ClientRepositoryError>;

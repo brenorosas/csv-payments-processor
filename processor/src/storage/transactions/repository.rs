@@ -9,6 +9,7 @@ use crate::storage::error::RepositoryError;
 const INSERT: &str = include_str!("sql/insert.sql");
 const GET_LAST_VERSIONS: &str = include_str!("sql/get_last_versions.sql");
 
+#[cfg_attr(feature = "test-utils", mockall::automock)]
 pub trait TransactionRepository: Send + Sync {
     fn insert(
         &self,
