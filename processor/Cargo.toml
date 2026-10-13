@@ -9,3 +9,4 @@ csv = "1.4.0"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
 anyhow = "1.0"
+serde = { version = "1.0.229", features = ["derive"] }
