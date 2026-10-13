@@ -259,6 +259,15 @@ impl ProcessorService {
             return;
         };
 
+        if disputed.client_id != transaction.client {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "dispute ignored: transaction belongs to another client"
+            );
+            return;
+        }
+
         if disputed.r#type != TransactionType::Deposit {
             tracing::warn!(
                 tx = transaction.tx,
@@ -321,6 +330,15 @@ impl ProcessorService {
             return;
         };
 
+        if disputed.client_id != transaction.client {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "resolve ignored: transaction belongs to another client"
+            );
+            return;
+        }
+
         if disputed.r#type != TransactionType::Dispute {
             tracing::warn!(
                 tx = transaction.tx,
@@ -382,6 +400,15 @@ impl ProcessorService {
             );
             return;
         };
+
+        if disputed.client_id != transaction.client {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "chargeback ignored: transaction belongs to another client"
+            );
+            return;
+        }
 
         if disputed.r#type != TransactionType::Dispute {
             tracing::warn!(

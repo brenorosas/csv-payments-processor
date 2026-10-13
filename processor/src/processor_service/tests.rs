@@ -727,3 +727,76 @@ async fn process_chargeback_does_not_change_anything_when_it_cannot_apply() {
     assert_eq!(last_transactions, last_transactions_before);
     assert_eq!(transactions_to_insert, transactions_to_insert_before);
 }
+
+#[tokio::test]
+async fn process_dispute_resolve_and_chargeback_ignore_transactions_of_other_clients() {
+    let service = service().await;
+    let mut clients = HashMap::new();
+    let mut last_transactions = HashMap::new();
+    let mut transactions_to_insert = Vec::new();
+
+    service.process_deposit(
+        &deposit(1, 8, "1"),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+    let before_dispute = (
+        clients.clone(),
+        last_transactions.clone(),
+        transactions_to_insert.clone(),
+    );
+
+    service.process_dispute(
+        &dispute(1, 9),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+
+    assert_eq!(clients, before_dispute.0);
+    assert_eq!(last_transactions, before_dispute.1);
+    assert_eq!(transactions_to_insert, before_dispute.2);
+
+    service.process_dispute(
+        &dispute(1, 8),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+    let under_dispute = (
+        clients.clone(),
+        last_transactions.clone(),
+        transactions_to_insert.clone(),
+    );
+    assert_eq!(clients[&8].held_amount, 10_000);
+
+    service.process_resolve(
+        &resolve(1, 9),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+    service.process_chargeback(
+        &chargeback(1, 9),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+
+    assert_eq!(clients, under_dispute.0);
+    assert_eq!(last_transactions, under_dispute.1);
+    assert_eq!(transactions_to_insert, under_dispute.2);
+
+    service.process_chargeback(
+        &chargeback(1, 8),
+        &mut clients,
+        &mut last_transactions,
+        &mut transactions_to_insert,
+    );
+
+    assert_eq!(clients[&8].held_amount, 0);
+    assert_eq!(clients[&8].total_amount, 0);
+    assert!(clients[&8].locked);
+    assert!(!clients.contains_key(&9));
+}
