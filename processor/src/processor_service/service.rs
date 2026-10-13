@@ -61,6 +61,12 @@ impl ProcessorService {
             })
             .await?;
 
+        for transaction in transactions {
+            clients
+                .entry(transaction.client)
+                .or_insert_with(|| Client::new(transaction.client));
+        }
+
         let mut transactions_to_insert: Vec<NewTransaction> = Vec::new();
 
         for transaction in transactions {
@@ -76,7 +82,7 @@ impl ProcessorService {
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                ),
+                )?,
                 TransactionType::Dispute => self.process_dispute(
                     transaction,
                     &mut clients,
@@ -140,16 +146,9 @@ impl ProcessorService {
 
         let amount = Self::parse_amount(transaction)?;
 
-        let client = clients.entry(transaction.client).or_insert_with(|| Client {
-            id: transaction.client,
-            available_amount: 0,
-            held_amount: 0,
-            total_amount: 0,
-            locked: false,
-            version: 1,
-            created_at: String::new(),
-            updated_at: String::new(),
-        });
+        let client = clients
+            .entry(transaction.client)
+            .or_insert_with(|| Client::new(transaction.client));
 
         client.available_amount += amount;
         client.total_amount += amount;
@@ -182,7 +181,46 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) {
+    ) -> Result<(), ProcessorServiceError> {
+        if last_transactions.contains_key(&transaction.tx) {
+            return Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
+                transaction.tx,
+            ));
+        }
+
+        let amount = Self::parse_amount(transaction)?;
+
+        let client = clients
+            .get_mut(&transaction.client)
+            .filter(|client| client.available_amount >= amount)
+            .ok_or(ProcessorServiceError::WithdrawalWithInsufficientFunds {
+                tx: transaction.tx,
+                client: transaction.client,
+            })?;
+
+        client.available_amount -= amount;
+        client.total_amount -= amount;
+
+        transactions_to_insert.push(NewTransaction {
+            r#type: transaction.r#type,
+            client_id: transaction.client,
+            id: transaction.tx,
+            version: 1,
+            amount: Some(amount),
+        });
+        last_transactions.insert(
+            transaction.tx,
+            Transaction {
+                r#type: transaction.r#type,
+                client_id: transaction.client,
+                id: transaction.tx,
+                version: 1,
+                amount: Some(amount),
+                created_at: String::new(),
+            },
+        );
+
+        Ok(())
     }
 
     fn process_dispute(
@@ -300,6 +338,27 @@ mod tests {
             client,
             tx,
             amount: Some(amount.to_string()),
+        }
+    }
+
+    fn withdrawal(tx: u32, client: u16, amount: &str) -> TransactionCsv {
+        TransactionCsv {
+            r#type: TransactionType::Withdrawal,
+            client,
+            tx,
+            amount: Some(amount.to_string()),
+        }
+    }
+
+    fn client_with_funds(id: u16, available: i64, held: i64) -> Client {
+        Client {
+            available_amount: available,
+            held_amount: held,
+            total_amount: available + held,
+            version: 3,
+            created_at: "2024-01-01 00:00:00".to_string(),
+            updated_at: "2024-01-02 00:00:00".to_string(),
+            ..Client::new(id)
         }
     }
 
@@ -450,6 +509,140 @@ mod tests {
                 (case, result) => panic!("{case}: unexpected result {result:?}"),
             }
         }
+
+        assert_eq!(clients, clients_before);
+        assert_eq!(last_transactions, last_transactions_before);
+        assert_eq!(transactions_to_insert, transactions_to_insert_before);
+    }
+
+    #[tokio::test]
+    async fn process_withdrawal_updates_the_client_and_registers_the_transaction() {
+        let service = service().await;
+        let mut clients = HashMap::from([(8, client_with_funds(8, 10_000, 5_000))]);
+        let mut last_transactions = HashMap::new();
+        let mut transactions_to_insert = Vec::new();
+
+        service
+            .process_withdrawal(
+                &withdrawal(1, 8, "0.4"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let client = &clients[&8];
+        assert_eq!(client.available_amount, 6_000);
+        assert_eq!(client.held_amount, 5_000);
+        assert_eq!(client.total_amount, 11_000);
+        assert_eq!(client.version, 3);
+        assert_eq!(client.created_at, "2024-01-01 00:00:00");
+        assert_eq!(
+            transactions_to_insert,
+            vec![NewTransaction {
+                r#type: TransactionType::Withdrawal,
+                client_id: 8,
+                id: 1,
+                version: 1,
+                amount: Some(4_000),
+            }]
+        );
+        assert_eq!(last_transactions[&1].r#type, TransactionType::Withdrawal);
+        assert_eq!(last_transactions[&1].client_id, 8);
+        assert_eq!(last_transactions[&1].amount, Some(4_000));
+
+        service
+            .process_withdrawal(
+                &withdrawal(2, 8, "0.6"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        assert_eq!(clients[&8].available_amount, 0);
+        assert_eq!(clients[&8].held_amount, 5_000);
+        assert_eq!(clients[&8].total_amount, 5_000);
+        assert_eq!(transactions_to_insert.len(), 2);
+        assert_eq!(transactions_to_insert[1].id, 2);
+        assert_eq!(clients.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn process_withdrawal_fails_without_changing_anything() {
+        let service = service().await;
+        let mut clients =
+            HashMap::from([(8, client_with_funds(8, 1_000, 5_000)), (9, Client::new(9))]);
+        let mut last_transactions = HashMap::from([(
+            50,
+            Transaction {
+                r#type: TransactionType::Deposit,
+                client_id: 8,
+                id: 50,
+                version: 1,
+                amount: Some(10_000),
+                created_at: "2024-01-01 00:00:00".to_string(),
+            },
+        )]);
+        let mut transactions_to_insert = Vec::new();
+
+        service
+            .process_withdrawal(
+                &withdrawal(1, 8, "0.05"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let clients_before = clients.clone();
+        let last_transactions_before = last_transactions.clone();
+        let transactions_to_insert_before = transactions_to_insert.clone();
+
+        let mut run = |transaction: TransactionCsv| {
+            service.process_withdrawal(
+                &transaction,
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+        };
+
+        assert!(matches!(
+            run(withdrawal(50, 8, "0.01")),
+            Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
+                50
+            ))
+        ));
+        assert!(matches!(
+            run(withdrawal(1, 8, "0.01")),
+            Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
+                1
+            ))
+        ));
+        assert!(matches!(
+            run(withdrawal(2, 8, "0.0951")),
+            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 2, client: 8 })
+        ));
+        assert!(matches!(
+            run(withdrawal(3, 9, "0.0001")),
+            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 3, client: 9 })
+        ));
+        assert!(matches!(
+            run(withdrawal(4, 99, "1")),
+            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 4, client: 99 })
+        ));
+        assert!(matches!(
+            run(TransactionCsv {
+                amount: None,
+                ..withdrawal(5, 8, "1")
+            }),
+            Err(ProcessorServiceError::MissingAmount(5))
+        ));
+        assert!(matches!(
+            run(withdrawal(6, 8, "abc")),
+            Err(ProcessorServiceError::InvalidAmount { tx: 6, .. })
+        ));
 
         assert_eq!(clients, clients_before);
         assert_eq!(last_transactions, last_transactions_before);

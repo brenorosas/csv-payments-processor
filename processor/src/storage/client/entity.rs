@@ -13,6 +13,21 @@ pub struct Client {
     pub updated_at: String,
 }
 
+impl Client {
+    pub fn new(id: u16) -> Self {
+        Self {
+            id,
+            available_amount: 0,
+            held_amount: 0,
+            total_amount: 0,
+            locked: false,
+            version: 1,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 impl TryFrom<&Row<'_>> for Client {
     type Error = rusqlite::Error;
 

@@ -20,6 +20,12 @@ pub enum ProcessorServiceError {
     #[error("deposit with transaction id {0}, which already exists")]
     DepositWithExistingTransactionId(u32),
 
+    #[error("withdrawal with transaction id {0}, which already exists")]
+    WithdrawalWithExistingTransactionId(u32),
+
+    #[error("withdrawal {tx} exceeds the available amount of client {client}")]
+    WithdrawalWithInsufficientFunds { tx: u32, client: u16 },
+
     #[error("transaction {0} has no amount")]
     MissingAmount(u32),
 
