@@ -1,6 +1,6 @@
-mod storage;
 mod transaction_csv;
 
+use processor::storage;
 use rusqlite::Connection;
 use storage::client::repository::SqliteClientRepository;
 use storage::transactions::repository::SqliteTransactionRepository;

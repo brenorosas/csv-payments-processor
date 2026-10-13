@@ -213,10 +213,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "csv",
+ "processor",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror",
  "tokio",
 ]
 
