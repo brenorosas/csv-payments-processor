@@ -32,6 +32,9 @@ pub enum ProcessorServiceError {
     #[error("resolve on transaction {0}, which is not under dispute")]
     ResolveTransactionNotUnderDispute(u32),
 
+    #[error("chargeback on transaction {0}, which is not under dispute")]
+    ChargebackTransactionNotUnderDispute(u32),
+
     #[error("transaction {0} has no amount")]
     MissingAmount(u32),
 
