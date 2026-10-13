@@ -41,6 +41,10 @@ fn parse_amount() {
     for amount in ["", "   ", "abc", "1,5", "1.2.3", "nan", "1 000"] {
         assert_eq!(parse(amount), None, "{amount:?} should be invalid");
     }
+
+    for amount in ["-1", "-0.0001", "-250.5", "  -1  "] {
+        assert_eq!(parse(amount), None, "{amount:?} is negative");
+    }
 }
 
 async fn service() -> ProcessorService {
