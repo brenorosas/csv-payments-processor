@@ -88,13 +88,13 @@ impl ProcessorService {
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                ),
+                )?,
                 TransactionType::Resolve => self.process_resolve(
                     transaction,
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                ),
+                )?,
                 TransactionType::Chargeback => self.process_chargeback(
                     transaction,
                     &mut clients,
@@ -229,7 +229,49 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) {
+    ) -> Result<(), ProcessorServiceError> {
+        let Some(disputed) = last_transactions.get(&transaction.tx) else {
+            return Ok(());
+        };
+
+        if disputed.r#type != TransactionType::Deposit {
+            return Err(ProcessorServiceError::DisputeTransactionNotDeposit(
+                transaction.tx,
+            ));
+        }
+
+        let amount = disputed
+            .amount
+            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
+        let version = disputed.version + 1;
+
+        let client = clients
+            .entry(transaction.client)
+            .or_insert_with(|| Client::new(transaction.client));
+
+        client.available_amount -= amount;
+        client.held_amount += amount;
+
+        transactions_to_insert.push(NewTransaction {
+            r#type: transaction.r#type,
+            client_id: transaction.client,
+            id: transaction.tx,
+            version,
+            amount: Some(amount),
+        });
+        last_transactions.insert(
+            transaction.tx,
+            Transaction {
+                r#type: transaction.r#type,
+                client_id: transaction.client,
+                id: transaction.tx,
+                version,
+                amount: Some(amount),
+                created_at: String::new(),
+            },
+        );
+
+        Ok(())
     }
 
     fn process_resolve(
@@ -238,7 +280,49 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) {
+    ) -> Result<(), ProcessorServiceError> {
+        let Some(disputed) = last_transactions.get(&transaction.tx) else {
+            return Ok(());
+        };
+
+        if disputed.r#type != TransactionType::Dispute {
+            return Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(
+                transaction.tx,
+            ));
+        }
+
+        let amount = disputed
+            .amount
+            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
+        let version = disputed.version + 1;
+
+        let client = clients
+            .entry(transaction.client)
+            .or_insert_with(|| Client::new(transaction.client));
+
+        client.available_amount += amount;
+        client.held_amount -= amount;
+
+        transactions_to_insert.push(NewTransaction {
+            r#type: transaction.r#type,
+            client_id: transaction.client,
+            id: transaction.tx,
+            version,
+            amount: Some(amount),
+        });
+        last_transactions.insert(
+            transaction.tx,
+            Transaction {
+                r#type: transaction.r#type,
+                client_id: transaction.client,
+                id: transaction.tx,
+                version,
+                amount: Some(amount),
+                created_at: String::new(),
+            },
+        );
+
+        Ok(())
     }
 
     fn process_chargeback(
@@ -347,6 +431,24 @@ mod tests {
             client,
             tx,
             amount: Some(amount.to_string()),
+        }
+    }
+
+    fn dispute(tx: u32, client: u16) -> TransactionCsv {
+        TransactionCsv {
+            r#type: TransactionType::Dispute,
+            client,
+            tx,
+            amount: None,
+        }
+    }
+
+    fn resolve(tx: u32, client: u16) -> TransactionCsv {
+        TransactionCsv {
+            r#type: TransactionType::Resolve,
+            client,
+            tx,
+            amount: None,
         }
     }
 
@@ -642,6 +744,297 @@ mod tests {
         assert!(matches!(
             run(withdrawal(6, 8, "abc")),
             Err(ProcessorServiceError::InvalidAmount { tx: 6, .. })
+        ));
+
+        assert_eq!(clients, clients_before);
+        assert_eq!(last_transactions, last_transactions_before);
+        assert_eq!(transactions_to_insert, transactions_to_insert_before);
+    }
+
+    #[tokio::test]
+    async fn process_dispute_holds_the_funds_of_the_disputed_deposit() {
+        let service = service().await;
+        let mut clients = HashMap::from([(8, client_with_funds(8, 10_000, 500))]);
+        let mut last_transactions = HashMap::from([(
+            60,
+            Transaction {
+                r#type: TransactionType::Deposit,
+                client_id: 8,
+                id: 60,
+                version: 1,
+                amount: Some(4_000),
+                created_at: "2024-01-01 00:00:00".to_string(),
+            },
+        )]);
+        let mut transactions_to_insert = Vec::new();
+
+        service
+            .process_dispute(
+                &dispute(60, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let client = &clients[&8];
+        assert_eq!(client.available_amount, 6_000);
+        assert_eq!(client.held_amount, 4_500);
+        assert_eq!(client.total_amount, 10_500);
+        assert_eq!(client.version, 3);
+        assert_eq!(
+            transactions_to_insert,
+            vec![NewTransaction {
+                r#type: TransactionType::Dispute,
+                client_id: 8,
+                id: 60,
+                version: 2,
+                amount: Some(4_000),
+            }]
+        );
+        assert_eq!(last_transactions[&60].r#type, TransactionType::Dispute);
+        assert_eq!(last_transactions[&60].version, 2);
+        assert_eq!(last_transactions[&60].amount, Some(4_000));
+
+        service
+            .process_deposit(
+                &deposit(61, 8, "1"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        service
+            .process_dispute(
+                &dispute(61, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        assert_eq!(clients[&8].available_amount, 6_000);
+        assert_eq!(clients[&8].held_amount, 14_500);
+        assert_eq!(clients[&8].total_amount, 20_500);
+        assert_eq!(transactions_to_insert.len(), 3);
+        assert_eq!(transactions_to_insert[2].version, 2);
+        assert_eq!(last_transactions[&60].version, 2);
+    }
+
+    #[tokio::test]
+    async fn process_dispute_does_not_change_anything_when_it_cannot_apply() {
+        let service = service().await;
+        let mut clients = HashMap::new();
+        let mut last_transactions = HashMap::new();
+        let mut transactions_to_insert = Vec::new();
+
+        service
+            .process_deposit(
+                &deposit(1, 8, "1"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        service
+            .process_withdrawal(
+                &withdrawal(2, 8, "0.3"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        service
+            .process_dispute(
+                &dispute(1, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let clients_before = clients.clone();
+        let last_transactions_before = last_transactions.clone();
+        let transactions_to_insert_before = transactions_to_insert.clone();
+
+        let mut run = |transaction: TransactionCsv| {
+            service.process_dispute(
+                &transaction,
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+        };
+
+        assert!(run(dispute(99, 8)).is_ok());
+        assert!(matches!(
+            run(dispute(2, 8)),
+            Err(ProcessorServiceError::DisputeTransactionNotDeposit(2))
+        ));
+        assert!(matches!(
+            run(dispute(1, 8)),
+            Err(ProcessorServiceError::DisputeTransactionNotDeposit(1))
+        ));
+
+        assert_eq!(clients, clients_before);
+        assert_eq!(last_transactions, last_transactions_before);
+        assert_eq!(transactions_to_insert, transactions_to_insert_before);
+    }
+
+    #[tokio::test]
+    async fn process_resolve_releases_the_held_funds_of_the_disputed_deposit() {
+        let service = service().await;
+        let mut clients = HashMap::from([(8, client_with_funds(8, 6_000, 4_500))]);
+        let mut last_transactions = HashMap::from([(
+            60,
+            Transaction {
+                r#type: TransactionType::Dispute,
+                client_id: 8,
+                id: 60,
+                version: 2,
+                amount: Some(4_000),
+                created_at: "2024-01-01 00:00:00".to_string(),
+            },
+        )]);
+        let mut transactions_to_insert = Vec::new();
+
+        service
+            .process_resolve(
+                &resolve(60, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let client = &clients[&8];
+        assert_eq!(client.available_amount, 10_000);
+        assert_eq!(client.held_amount, 500);
+        assert_eq!(client.total_amount, 10_500);
+        assert_eq!(client.version, 3);
+        assert_eq!(
+            transactions_to_insert,
+            vec![NewTransaction {
+                r#type: TransactionType::Resolve,
+                client_id: 8,
+                id: 60,
+                version: 3,
+                amount: Some(4_000),
+            }]
+        );
+        assert_eq!(last_transactions[&60].r#type, TransactionType::Resolve);
+        assert_eq!(last_transactions[&60].version, 3);
+        assert_eq!(last_transactions[&60].amount, Some(4_000));
+
+        let before = clients[&8].clone();
+        service
+            .process_deposit(
+                &deposit(61, 8, "1"),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        let after_deposit = clients[&8].clone();
+        service
+            .process_dispute(
+                &dispute(61, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        service
+            .process_resolve(
+                &resolve(61, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        assert_eq!(clients[&8], after_deposit);
+        assert_eq!(
+            after_deposit.available_amount,
+            before.available_amount + 10_000
+        );
+        assert_eq!(transactions_to_insert.len(), 4);
+        assert_eq!(transactions_to_insert[2].r#type, TransactionType::Dispute);
+        assert_eq!(transactions_to_insert[2].version, 2);
+        assert_eq!(transactions_to_insert[3].r#type, TransactionType::Resolve);
+        assert_eq!(transactions_to_insert[3].version, 3);
+    }
+
+    #[tokio::test]
+    async fn process_resolve_does_not_change_anything_when_it_cannot_apply() {
+        let service = service().await;
+        let mut clients = HashMap::new();
+        let mut last_transactions = HashMap::new();
+        let mut transactions_to_insert = Vec::new();
+
+        for transaction in [
+            deposit(1, 8, "1"),
+            deposit(3, 8, "2"),
+            withdrawal(2, 8, "0.3"),
+        ] {
+            match transaction.r#type {
+                TransactionType::Deposit => service.process_deposit(
+                    &transaction,
+                    &mut clients,
+                    &mut last_transactions,
+                    &mut transactions_to_insert,
+                ),
+                _ => service.process_withdrawal(
+                    &transaction,
+                    &mut clients,
+                    &mut last_transactions,
+                    &mut transactions_to_insert,
+                ),
+            }
+            .unwrap();
+        }
+        service
+            .process_dispute(
+                &dispute(1, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+        service
+            .process_resolve(
+                &resolve(1, 8),
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+            .unwrap();
+
+        let clients_before = clients.clone();
+        let last_transactions_before = last_transactions.clone();
+        let transactions_to_insert_before = transactions_to_insert.clone();
+
+        let mut run = |transaction: TransactionCsv| {
+            service.process_resolve(
+                &transaction,
+                &mut clients,
+                &mut last_transactions,
+                &mut transactions_to_insert,
+            )
+        };
+
+        assert!(run(resolve(99, 8)).is_ok());
+        assert!(matches!(
+            run(resolve(3, 8)),
+            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(3))
+        ));
+        assert!(matches!(
+            run(resolve(2, 8)),
+            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(2))
+        ));
+        assert!(matches!(
+            run(resolve(1, 8)),
+            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(1))
         ));
 
         assert_eq!(clients, clients_before);

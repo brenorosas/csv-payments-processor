@@ -26,6 +26,12 @@ pub enum ProcessorServiceError {
     #[error("withdrawal {tx} exceeds the available amount of client {client}")]
     WithdrawalWithInsufficientFunds { tx: u32, client: u16 },
 
+    #[error("dispute on transaction {0}, which is not a deposit")]
+    DisputeTransactionNotDeposit(u32),
+
+    #[error("resolve on transaction {0}, which is not under dispute")]
+    ResolveTransactionNotUnderDispute(u32),
+
     #[error("transaction {0} has no amount")]
     MissingAmount(u32),
 
