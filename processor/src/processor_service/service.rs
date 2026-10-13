@@ -353,6 +353,7 @@ impl ProcessorService {
 
         client.held_amount -= amount;
         client.total_amount -= amount;
+        client.locked = true;
 
         transactions_to_insert.push(NewTransaction {
             r#type: transaction.r#type,
@@ -1123,6 +1124,7 @@ mod tests {
         assert_eq!(client.available_amount, 6_000);
         assert_eq!(client.held_amount, 500);
         assert_eq!(client.total_amount, 6_500);
+        assert!(client.locked);
         assert_eq!(client.version, 3);
         assert_eq!(
             transactions_to_insert,
