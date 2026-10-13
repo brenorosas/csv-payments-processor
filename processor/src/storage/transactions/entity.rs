@@ -59,6 +59,25 @@ pub struct NewTransaction {
     pub amount: Option<i64>,
 }
 
+impl NewTransaction {
+    #[cfg(feature = "test-utils")]
+    pub fn new_for_tests(
+        r#type: TransactionType,
+        client_id: u16,
+        id: u32,
+        version: u32,
+        amount: Option<i64>,
+    ) -> Self {
+        Self {
+            r#type,
+            client_id,
+            id,
+            version,
+            amount,
+        }
+    }
+}
+
 impl TryFrom<&Row<'_>> for Transaction {
     type Error = rusqlite::Error;
 
