@@ -76,31 +76,31 @@ impl ProcessorService {
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                )?,
+                ),
                 TransactionType::Withdrawal => self.process_withdrawal(
                     transaction,
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                )?,
+                ),
                 TransactionType::Dispute => self.process_dispute(
                     transaction,
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                )?,
+                ),
                 TransactionType::Resolve => self.process_resolve(
                     transaction,
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                )?,
+                ),
                 TransactionType::Chargeback => self.process_chargeback(
                     transaction,
                     &mut clients,
                     &mut last_transactions,
                     &mut transactions_to_insert,
-                )?,
+                ),
             }
         }
 
@@ -137,14 +137,19 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) -> Result<(), ProcessorServiceError> {
+    ) {
         if last_transactions.contains_key(&transaction.tx) {
-            return Err(ProcessorServiceError::DepositWithExistingTransactionId(
-                transaction.tx,
-            ));
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "deposit ignored: transaction id already exists"
+            );
+            return;
         }
 
-        let amount = Self::parse_amount(transaction)?;
+        let Some(amount) = Self::parse_amount(transaction) else {
+            return;
+        };
 
         let client = clients
             .entry(transaction.client)
@@ -171,8 +176,6 @@ impl ProcessorService {
                 created_at: String::new(),
             },
         );
-
-        Ok(())
     }
 
     fn process_withdrawal(
@@ -181,22 +184,31 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) -> Result<(), ProcessorServiceError> {
+    ) {
         if last_transactions.contains_key(&transaction.tx) {
-            return Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
-                transaction.tx,
-            ));
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "withdrawal ignored: transaction id already exists"
+            );
+            return;
         }
 
-        let amount = Self::parse_amount(transaction)?;
+        let Some(amount) = Self::parse_amount(transaction) else {
+            return;
+        };
 
-        let client = clients
+        let Some(client) = clients
             .get_mut(&transaction.client)
             .filter(|client| client.available_amount >= amount)
-            .ok_or(ProcessorServiceError::WithdrawalWithInsufficientFunds {
-                tx: transaction.tx,
-                client: transaction.client,
-            })?;
+        else {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "withdrawal ignored: insufficient available funds"
+            );
+            return;
+        };
 
         client.available_amount -= amount;
         client.total_amount -= amount;
@@ -219,8 +231,6 @@ impl ProcessorService {
                 created_at: String::new(),
             },
         );
-
-        Ok(())
     }
 
     fn process_dispute(
@@ -229,20 +239,33 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) -> Result<(), ProcessorServiceError> {
+    ) {
         let Some(disputed) = last_transactions.get(&transaction.tx) else {
-            return Ok(());
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "dispute ignored: transaction not found"
+            );
+            return;
         };
 
         if disputed.r#type != TransactionType::Deposit {
-            return Err(ProcessorServiceError::DisputeTransactionNotDeposit(
-                transaction.tx,
-            ));
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "dispute ignored: transaction is not a deposit"
+            );
+            return;
         }
 
-        let amount = disputed
-            .amount
-            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
+        let Some(amount) = disputed.amount else {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "dispute ignored: transaction has no amount"
+            );
+            return;
+        };
         let version = disputed.version + 1;
 
         let client = clients
@@ -256,7 +279,7 @@ impl ProcessorService {
             r#type: transaction.r#type,
             client_id: transaction.client,
             id: transaction.tx,
-            version,
+            version: version,
             amount: Some(amount),
         });
         last_transactions.insert(
@@ -265,13 +288,11 @@ impl ProcessorService {
                 r#type: transaction.r#type,
                 client_id: transaction.client,
                 id: transaction.tx,
-                version,
+                version: version,
                 amount: Some(amount),
                 created_at: String::new(),
             },
         );
-
-        Ok(())
     }
 
     fn process_resolve(
@@ -280,20 +301,33 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) -> Result<(), ProcessorServiceError> {
+    ) {
         let Some(disputed) = last_transactions.get(&transaction.tx) else {
-            return Ok(());
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "resolve ignored: transaction not found"
+            );
+            return;
         };
 
         if disputed.r#type != TransactionType::Dispute {
-            return Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(
-                transaction.tx,
-            ));
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "resolve ignored: transaction is not under dispute"
+            );
+            return;
         }
 
-        let amount = disputed
-            .amount
-            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
+        let Some(amount) = disputed.amount else {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "resolve ignored: transaction has no amount"
+            );
+            return;
+        };
         let version = disputed.version + 1;
 
         let client = clients
@@ -307,7 +341,7 @@ impl ProcessorService {
             r#type: transaction.r#type,
             client_id: transaction.client,
             id: transaction.tx,
-            version,
+            version: version,
             amount: Some(amount),
         });
         last_transactions.insert(
@@ -316,13 +350,11 @@ impl ProcessorService {
                 r#type: transaction.r#type,
                 client_id: transaction.client,
                 id: transaction.tx,
-                version,
+                version: version,
                 amount: Some(amount),
                 created_at: String::new(),
             },
         );
-
-        Ok(())
     }
 
     fn process_chargeback(
@@ -331,20 +363,33 @@ impl ProcessorService {
         clients: &mut HashMap<u16, Client>,
         last_transactions: &mut HashMap<u32, Transaction>,
         transactions_to_insert: &mut Vec<NewTransaction>,
-    ) -> Result<(), ProcessorServiceError> {
+    ) {
         let Some(disputed) = last_transactions.get(&transaction.tx) else {
-            return Ok(());
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "chargeback ignored: transaction not found"
+            );
+            return;
         };
 
         if disputed.r#type != TransactionType::Dispute {
-            return Err(ProcessorServiceError::ChargebackTransactionNotUnderDispute(
-                transaction.tx,
-            ));
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "chargeback ignored: transaction is not under dispute"
+            );
+            return;
         }
 
-        let amount = disputed
-            .amount
-            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
+        let Some(amount) = disputed.amount else {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "chargeback ignored: transaction has no amount"
+            );
+            return;
+        };
         let version = disputed.version + 1;
 
         let client = clients
@@ -359,7 +404,7 @@ impl ProcessorService {
             r#type: transaction.r#type,
             client_id: transaction.client,
             id: transaction.tx,
-            version,
+            version: version,
             amount: Some(amount),
         });
         last_transactions.insert(
@@ -368,31 +413,39 @@ impl ProcessorService {
                 r#type: transaction.r#type,
                 client_id: transaction.client,
                 id: transaction.tx,
-                version,
+                version: version,
                 amount: Some(amount),
                 created_at: String::new(),
             },
         );
-
-        Ok(())
     }
 
     const AMOUNT_SCALE: i64 = 10_000;
 
-    fn parse_amount(transaction: &TransactionCsv) -> Result<i64, ProcessorServiceError> {
-        let amount = transaction
-            .amount
-            .as_deref()
-            .ok_or(ProcessorServiceError::MissingAmount(transaction.tx))?;
-        let invalid = || ProcessorServiceError::InvalidAmount {
-            tx: transaction.tx,
-            amount: amount.to_string(),
+    fn parse_amount(transaction: &TransactionCsv) -> Option<i64> {
+        let Some(amount) = transaction.amount.as_deref() else {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                "transaction ignored: missing amount"
+            );
+            return None;
         };
 
-        let decimal = Decimal::from_str(amount.trim()).map_err(|_| invalid())?;
-        (decimal * Decimal::from(Self::AMOUNT_SCALE))
-            .to_i64()
-            .ok_or_else(invalid)
+        let parsed = Decimal::from_str(amount.trim())
+            .ok()
+            .and_then(|decimal| (decimal * Decimal::from(Self::AMOUNT_SCALE)).to_i64());
+
+        if parsed.is_none() {
+            tracing::warn!(
+                tx = transaction.tx,
+                client = transaction.client,
+                amount,
+                "transaction ignored: invalid amount"
+            );
+        }
+
+        parsed
     }
 }
 
@@ -411,43 +464,35 @@ mod tests {
         }
     }
 
-    fn parse(amount: &str) -> Result<i64, ProcessorServiceError> {
+    fn parse(amount: &str) -> Option<i64> {
         ProcessorService::parse_amount(&transaction_with_amount(Some(amount)))
     }
 
     #[test]
     fn parse_amount() {
-        assert_eq!(parse("1").unwrap(), 10_000);
-        assert_eq!(parse("250").unwrap(), 2_500_000);
-        assert_eq!(parse("0").unwrap(), 0);
+        assert_eq!(parse("1"), Some(10_000));
+        assert_eq!(parse("250"), Some(2_500_000));
+        assert_eq!(parse("0"), Some(0));
 
-        assert_eq!(parse("1.5").unwrap(), 15_000);
-        assert_eq!(parse("1.23").unwrap(), 12_300);
-        assert_eq!(parse("1.234").unwrap(), 12_340);
-        assert_eq!(parse("1.2345").unwrap(), 12_345);
-        assert_eq!(parse("0.0001").unwrap(), 1);
+        assert_eq!(parse("1.5"), Some(15_000));
+        assert_eq!(parse("1.23"), Some(12_300));
+        assert_eq!(parse("1.234"), Some(12_340));
+        assert_eq!(parse("1.2345"), Some(12_345));
+        assert_eq!(parse("0.0001"), Some(1));
 
-        assert_eq!(parse("500000.0001").unwrap(), 5_000_000_001);
+        assert_eq!(parse("500000.0001"), Some(5_000_000_001));
 
-        assert_eq!(parse("  1.5").unwrap(), 15_000);
-        assert_eq!(parse("1.5  ").unwrap(), 15_000);
-        assert_eq!(parse("   1.2345   ").unwrap(), 12_345);
+        assert_eq!(parse("  1.5"), Some(15_000));
+        assert_eq!(parse("1.5  "), Some(15_000));
+        assert_eq!(parse("   1.2345   "), Some(12_345));
 
-        let missing = ProcessorService::parse_amount(&transaction_with_amount(None));
-        assert!(matches!(
-            missing,
-            Err(ProcessorServiceError::MissingAmount(42))
-        ));
+        assert_eq!(
+            ProcessorService::parse_amount(&transaction_with_amount(None)),
+            None
+        );
 
         for amount in ["", "   ", "abc", "1,5", "1.2.3", "nan", "1 000"] {
-            let result = parse(amount);
-            assert!(
-                matches!(
-                    &result,
-                    Err(ProcessorServiceError::InvalidAmount { tx: 42, amount: invalid }) if invalid == amount
-                ),
-                "{amount:?} should be invalid, got {result:?}"
-            );
+            assert_eq!(parse(amount), None, "{amount:?} should be invalid");
         }
     }
 
@@ -523,14 +568,12 @@ mod tests {
         let mut last_transactions = HashMap::new();
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_deposit(
-                &deposit(1, 7, "1.5"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(1, 7, "1.5"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let client = &clients[&7];
         assert_eq!(client.id, 7);
@@ -552,14 +595,12 @@ mod tests {
         assert_eq!(last_transactions[&1].client_id, 7);
         assert_eq!(last_transactions[&1].amount, Some(15_000));
 
-        service
-            .process_deposit(
-                &deposit(2, 7, "2.0001"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(2, 7, "2.0001"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         assert_eq!(clients[&7].available_amount, 35_001);
         assert_eq!(clients[&7].total_amount, 35_001);
@@ -580,14 +621,12 @@ mod tests {
             },
         );
 
-        service
-            .process_deposit(
-                &deposit(3, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(3, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let existing = &clients[&8];
         assert_eq!(existing.available_amount, 11_000);
@@ -617,14 +656,12 @@ mod tests {
                 created_at: "2024-01-01 00:00:00".to_string(),
             },
         );
-        service
-            .process_deposit(
-                &deposit(1, 7, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(1, 7, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let clients_before = clients.clone();
         let last_transactions_before = last_transactions.clone();
@@ -634,34 +671,19 @@ mod tests {
             amount: None,
             ..deposit(60, 7, "1")
         };
-        let results = [
-            (deposit(50, 7, "1"), "already in the database"),
-            (deposit(1, 7, "1"), "already in the same batch"),
-            (missing_amount, "missing amount"),
-            (deposit(61, 8, "abc"), "invalid amount"),
-        ];
 
-        for (transaction, case) in results {
-            let result = service.process_deposit(
+        for transaction in [
+            deposit(50, 7, "1"),
+            deposit(1, 7, "1"),
+            missing_amount,
+            deposit(61, 8, "abc"),
+        ] {
+            service.process_deposit(
                 &transaction,
                 &mut clients,
                 &mut last_transactions,
                 &mut transactions_to_insert,
             );
-
-            match (case, result) {
-                (
-                    "already in the database",
-                    Err(ProcessorServiceError::DepositWithExistingTransactionId(50)),
-                )
-                | (
-                    "already in the same batch",
-                    Err(ProcessorServiceError::DepositWithExistingTransactionId(1)),
-                )
-                | ("missing amount", Err(ProcessorServiceError::MissingAmount(60)))
-                | ("invalid amount", Err(ProcessorServiceError::InvalidAmount { tx: 61, .. })) => {}
-                (case, result) => panic!("{case}: unexpected result {result:?}"),
-            }
         }
 
         assert_eq!(clients, clients_before);
@@ -676,14 +698,12 @@ mod tests {
         let mut last_transactions = HashMap::new();
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_withdrawal(
-                &withdrawal(1, 8, "0.4"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_withdrawal(
+            &withdrawal(1, 8, "0.4"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let client = &clients[&8];
         assert_eq!(client.available_amount, 6_000);
@@ -705,14 +725,12 @@ mod tests {
         assert_eq!(last_transactions[&1].client_id, 8);
         assert_eq!(last_transactions[&1].amount, Some(4_000));
 
-        service
-            .process_withdrawal(
-                &withdrawal(2, 8, "0.6"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_withdrawal(
+            &withdrawal(2, 8, "0.6"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         assert_eq!(clients[&8].available_amount, 0);
         assert_eq!(clients[&8].held_amount, 5_000);
@@ -740,14 +758,12 @@ mod tests {
         )]);
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_withdrawal(
-                &withdrawal(1, 8, "0.05"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_withdrawal(
+            &withdrawal(1, 8, "0.05"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let clients_before = clients.clone();
         let last_transactions_before = last_transactions.clone();
@@ -762,41 +778,16 @@ mod tests {
             )
         };
 
-        assert!(matches!(
-            run(withdrawal(50, 8, "0.01")),
-            Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
-                50
-            ))
-        ));
-        assert!(matches!(
-            run(withdrawal(1, 8, "0.01")),
-            Err(ProcessorServiceError::WithdrawalWithExistingTransactionId(
-                1
-            ))
-        ));
-        assert!(matches!(
-            run(withdrawal(2, 8, "0.0951")),
-            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 2, client: 8 })
-        ));
-        assert!(matches!(
-            run(withdrawal(3, 9, "0.0001")),
-            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 3, client: 9 })
-        ));
-        assert!(matches!(
-            run(withdrawal(4, 99, "1")),
-            Err(ProcessorServiceError::WithdrawalWithInsufficientFunds { tx: 4, client: 99 })
-        ));
-        assert!(matches!(
-            run(TransactionCsv {
-                amount: None,
-                ..withdrawal(5, 8, "1")
-            }),
-            Err(ProcessorServiceError::MissingAmount(5))
-        ));
-        assert!(matches!(
-            run(withdrawal(6, 8, "abc")),
-            Err(ProcessorServiceError::InvalidAmount { tx: 6, .. })
-        ));
+        run(withdrawal(50, 8, "0.01"));
+        run(withdrawal(1, 8, "0.01"));
+        run(withdrawal(2, 8, "0.0951"));
+        run(withdrawal(3, 9, "0.0001"));
+        run(withdrawal(4, 99, "1"));
+        run(TransactionCsv {
+            amount: None,
+            ..withdrawal(5, 8, "1")
+        });
+        run(withdrawal(6, 8, "abc"));
 
         assert_eq!(clients, clients_before);
         assert_eq!(last_transactions, last_transactions_before);
@@ -820,14 +811,12 @@ mod tests {
         )]);
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_dispute(
-                &dispute(60, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_dispute(
+            &dispute(60, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let client = &clients[&8];
         assert_eq!(client.available_amount, 6_000);
@@ -848,22 +837,18 @@ mod tests {
         assert_eq!(last_transactions[&60].version, 2);
         assert_eq!(last_transactions[&60].amount, Some(4_000));
 
-        service
-            .process_deposit(
-                &deposit(61, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_dispute(
-                &dispute(61, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(61, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_dispute(
+            &dispute(61, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         assert_eq!(clients[&8].available_amount, 6_000);
         assert_eq!(clients[&8].held_amount, 14_500);
@@ -880,30 +865,24 @@ mod tests {
         let mut last_transactions = HashMap::new();
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_deposit(
-                &deposit(1, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_withdrawal(
-                &withdrawal(2, 8, "0.3"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_dispute(
-                &dispute(1, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(1, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_withdrawal(
+            &withdrawal(2, 8, "0.3"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_dispute(
+            &dispute(1, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let clients_before = clients.clone();
         let last_transactions_before = last_transactions.clone();
@@ -918,15 +897,9 @@ mod tests {
             )
         };
 
-        assert!(run(dispute(99, 8)).is_ok());
-        assert!(matches!(
-            run(dispute(2, 8)),
-            Err(ProcessorServiceError::DisputeTransactionNotDeposit(2))
-        ));
-        assert!(matches!(
-            run(dispute(1, 8)),
-            Err(ProcessorServiceError::DisputeTransactionNotDeposit(1))
-        ));
+        run(dispute(99, 8));
+        run(dispute(2, 8));
+        run(dispute(1, 8));
 
         assert_eq!(clients, clients_before);
         assert_eq!(last_transactions, last_transactions_before);
@@ -950,14 +923,12 @@ mod tests {
         )]);
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_resolve(
-                &resolve(60, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_resolve(
+            &resolve(60, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let client = &clients[&8];
         assert_eq!(client.available_amount, 10_000);
@@ -979,31 +950,25 @@ mod tests {
         assert_eq!(last_transactions[&60].amount, Some(4_000));
 
         let before = clients[&8].clone();
-        service
-            .process_deposit(
-                &deposit(61, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(61, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
         let after_deposit = clients[&8].clone();
-        service
-            .process_dispute(
-                &dispute(61, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_resolve(
-                &resolve(61, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_dispute(
+            &dispute(61, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_resolve(
+            &resolve(61, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         assert_eq!(clients[&8], after_deposit);
         assert_eq!(
@@ -1043,24 +1008,19 @@ mod tests {
                     &mut transactions_to_insert,
                 ),
             }
-            .unwrap();
         }
-        service
-            .process_dispute(
-                &dispute(1, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_resolve(
-                &resolve(1, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_dispute(
+            &dispute(1, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_resolve(
+            &resolve(1, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let clients_before = clients.clone();
         let last_transactions_before = last_transactions.clone();
@@ -1075,19 +1035,10 @@ mod tests {
             )
         };
 
-        assert!(run(resolve(99, 8)).is_ok());
-        assert!(matches!(
-            run(resolve(3, 8)),
-            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(3))
-        ));
-        assert!(matches!(
-            run(resolve(2, 8)),
-            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(2))
-        ));
-        assert!(matches!(
-            run(resolve(1, 8)),
-            Err(ProcessorServiceError::ResolveTransactionNotUnderDispute(1))
-        ));
+        run(resolve(99, 8));
+        run(resolve(3, 8));
+        run(resolve(2, 8));
+        run(resolve(1, 8));
 
         assert_eq!(clients, clients_before);
         assert_eq!(last_transactions, last_transactions_before);
@@ -1111,14 +1062,12 @@ mod tests {
         )]);
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_chargeback(
-                &chargeback(60, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_chargeback(
+            &chargeback(60, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let client = &clients[&8];
         assert_eq!(client.available_amount, 6_000);
@@ -1140,30 +1089,24 @@ mod tests {
         assert_eq!(last_transactions[&60].version, 3);
         assert_eq!(last_transactions[&60].amount, Some(4_000));
 
-        service
-            .process_deposit(
-                &deposit(61, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_dispute(
-                &dispute(61, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_chargeback(
-                &chargeback(61, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(61, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_dispute(
+            &dispute(61, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_chargeback(
+            &chargeback(61, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         assert_eq!(clients[&8].available_amount, 6_000);
         assert_eq!(clients[&8].held_amount, 500);
@@ -1185,46 +1128,36 @@ mod tests {
         let mut last_transactions = HashMap::new();
         let mut transactions_to_insert = Vec::new();
 
-        service
-            .process_deposit(
-                &deposit(1, 8, "1"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_deposit(
-                &deposit(3, 8, "2"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_withdrawal(
-                &withdrawal(2, 8, "0.3"),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_dispute(
-                &dispute(1, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
-        service
-            .process_chargeback(
-                &chargeback(1, 8),
-                &mut clients,
-                &mut last_transactions,
-                &mut transactions_to_insert,
-            )
-            .unwrap();
+        service.process_deposit(
+            &deposit(1, 8, "1"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_deposit(
+            &deposit(3, 8, "2"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_withdrawal(
+            &withdrawal(2, 8, "0.3"),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_dispute(
+            &dispute(1, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
+        service.process_chargeback(
+            &chargeback(1, 8),
+            &mut clients,
+            &mut last_transactions,
+            &mut transactions_to_insert,
+        );
 
         let clients_before = clients.clone();
         let last_transactions_before = last_transactions.clone();
@@ -1239,25 +1172,10 @@ mod tests {
             )
         };
 
-        assert!(run(chargeback(99, 8)).is_ok());
-        assert!(matches!(
-            run(chargeback(3, 8)),
-            Err(ProcessorServiceError::ChargebackTransactionNotUnderDispute(
-                3
-            ))
-        ));
-        assert!(matches!(
-            run(chargeback(2, 8)),
-            Err(ProcessorServiceError::ChargebackTransactionNotUnderDispute(
-                2
-            ))
-        ));
-        assert!(matches!(
-            run(chargeback(1, 8)),
-            Err(ProcessorServiceError::ChargebackTransactionNotUnderDispute(
-                1
-            ))
-        ));
+        run(chargeback(99, 8));
+        run(chargeback(3, 8));
+        run(chargeback(2, 8));
+        run(chargeback(1, 8));
 
         assert_eq!(clients, clients_before);
         assert_eq!(last_transactions, last_transactions_before);
