@@ -33,6 +33,8 @@ async fn setup() -> anyhow::Result<(NamedTempFile, String, Connection, Processor
     let file = NamedTempFile::new()?;
     storage::db::run_migrations(&rusqlite::Connection::open(file.path())?)?;
     let conn = Connection::open(file.path()).await?;
+    conn.call(|conn| conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;"))
+        .await?;
 
     let processor_service = ProcessorService::new(
         conn.clone(),
