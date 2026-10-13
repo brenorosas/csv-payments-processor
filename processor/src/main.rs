@@ -13,9 +13,22 @@ const BATCH_SIZE: usize = 1000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let (_file, path, conn, processor_service) = setup().await?;
+
+    process_csv_in_batches(&processor_service, &path).await?;
+    print_clients(&conn).await?;
+
+    Ok(())
+}
+
+async fn setup() -> anyhow::Result<(NamedTempFile, String, Connection, ProcessorService)> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
+
+    let path = std::env::args()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("usage: cargo run -- transactions.csv"))?;
 
     let file = NamedTempFile::new()?;
     storage::db::run_migrations(&rusqlite::Connection::open(file.path())?)?;
@@ -27,9 +40,13 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(SqliteTransactionRepository),
     );
 
-    let path = std::env::args()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: cargo run -- transactions.csv"))?;
+    Ok((file, path, conn, processor_service))
+}
+
+async fn process_csv_in_batches(
+    processor_service: &ProcessorService,
+    path: &str,
+) -> anyhow::Result<()> {
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
         .from_path(path)?;
@@ -49,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
         processor_service.process_transactions(&batch).await?;
     }
 
+    Ok(())
+}
+
+async fn print_clients(conn: &Connection) -> anyhow::Result<()> {
     let mut writer = csv::WriterBuilder::new()
         .has_headers(false)
         .from_writer(std::io::stdout());
