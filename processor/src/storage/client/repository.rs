@@ -1,13 +1,20 @@
+use std::collections::HashMap;
+
 use rusqlite::Connection;
 
-use super::entity::NewClient;
+use super::entity::{Client, NewClient};
 use super::error::ClientRepositoryError;
 use crate::storage::error::RepositoryError;
 
 const UPSERT: &str = include_str!("sql/upsert.sql");
+const GET_CLIENTS: &str = include_str!("sql/get_clients.sql");
 
 pub trait ClientRepository {
     fn upsert(&self, clients: &[NewClient]) -> Result<(), ClientRepositoryError>;
+    fn get_clients(
+        &self,
+        client_ids: &[u16],
+    ) -> Result<HashMap<u16, Client>, ClientRepositoryError>;
 }
 
 pub struct SqliteClientRepository<'a> {
@@ -22,7 +29,10 @@ impl<'a> SqliteClientRepository<'a> {
 
 impl ClientRepository for SqliteClientRepository<'_> {
     fn upsert(&self, clients: &[NewClient]) -> Result<(), ClientRepositoryError> {
-        let tx = self.conn.unchecked_transaction().map_err(RepositoryError::from)?;
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(RepositoryError::from)?;
         let clients_json = serde_json::to_string(clients).map_err(RepositoryError::from)?;
         let changed = tx
             .execute(UPSERT, [clients_json])
@@ -37,5 +47,31 @@ impl ClientRepository for SqliteClientRepository<'_> {
 
         tx.commit().map_err(RepositoryError::from)?;
         Ok(())
+    }
+
+    fn get_clients(
+        &self,
+        client_ids: &[u16],
+    ) -> Result<HashMap<u16, Client>, ClientRepositoryError> {
+        let ids = client_ids
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut stmt = self
+            .conn
+            .prepare_cached(GET_CLIENTS)
+            .map_err(RepositoryError::from)?;
+        let rows = stmt
+            .query_map([format!("[{ids}]")], |row| Client::try_from(row))
+            .map_err(RepositoryError::from)?;
+
+        let mut clients = HashMap::new();
+        for client in rows {
+            let client = client.map_err(RepositoryError::from)?;
+            clients.insert(client.id, client);
+        }
+        Ok(clients)
     }
 }

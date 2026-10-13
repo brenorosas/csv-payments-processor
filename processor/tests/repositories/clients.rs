@@ -85,3 +85,22 @@ fn upsert_fails_when_the_version_is_stale() {
     ));
     assert_eq!(read_clients(&conn), before);
 }
+
+#[test]
+fn get_clients_returns_only_the_requested_existing_clients() {
+    let conn = setup();
+    let repository = SqliteClientRepository::new(&conn);
+
+    let new_clients = [
+        NewClient::new_for_tests(1, 10_000, 2_500, 12_500, false, 1),
+        NewClient::new_for_tests(2, 25_000, 0, 25_000, true, 1),
+        NewClient::new_for_tests(3, 3_000, 500, 3_500, false, 1),
+    ];
+    repository.upsert(&new_clients).unwrap();
+
+    let clients = repository.get_clients(&[1, 3, 99]).unwrap();
+
+    assert_eq!(clients.len(), 2);
+    assert_stored(&clients[&1], &new_clients[0], 1);
+    assert_stored(&clients[&3], &new_clients[2], 1);
+}
