@@ -2,6 +2,8 @@
 
 Reads a CSV of transactions (deposit, withdrawal, dispute, resolve, chargeback), applies them in order to each client's account and prints the final accounts as a CSV.
 
+Run it inside the `processor` folder:
+
 ```bash
 cargo run -- transactions.csv > accounts.csv
 ```
