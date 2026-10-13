@@ -36,36 +36,8 @@ impl ProcessorService {
         &self,
         transactions: &[TransactionCsv],
     ) -> Result<(), ProcessorServiceError> {
-        let client_ids: Vec<u16> = transactions
-            .iter()
-            .map(|transaction| transaction.client)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-        let transaction_ids: Vec<u32> = transactions
-            .iter()
-            .map(|transaction| transaction.tx)
-            .collect::<HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        let client_repository = self.client_repository.clone();
-        let transaction_repository = self.transaction_repository.clone();
-        let (mut clients, mut last_transactions) = self
-            .conn
-            .call(move |conn| {
-                let clients = client_repository.get_clients(conn, &client_ids)?;
-                let last_transactions =
-                    transaction_repository.get_last_versions(conn, &transaction_ids)?;
-                Ok::<_, ProcessorServiceError>((clients, last_transactions))
-            })
-            .await?;
-
-        for transaction in transactions {
-            clients
-                .entry(transaction.client)
-                .or_insert_with(|| Client::new(transaction.client));
-        }
+        let (mut clients, mut last_transactions) =
+            self.get_clients_and_last_transactions(transactions).await?;
 
         let mut transactions_to_insert: Vec<NewTransaction> = Vec::new();
 
@@ -129,6 +101,44 @@ impl ProcessorService {
             .await?;
 
         Ok(())
+    }
+
+    async fn get_clients_and_last_transactions(
+        &self,
+        transactions: &[TransactionCsv],
+    ) -> Result<(HashMap<u16, Client>, HashMap<u32, Transaction>), ProcessorServiceError> {
+        let client_ids: Vec<u16> = transactions
+            .iter()
+            .map(|transaction| transaction.client)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let transaction_ids: Vec<u32> = transactions
+            .iter()
+            .map(|transaction| transaction.tx)
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        let client_repository = self.client_repository.clone();
+        let transaction_repository = self.transaction_repository.clone();
+        let (mut clients, last_transactions) = self
+            .conn
+            .call(move |conn| {
+                let clients = client_repository.get_clients(conn, &client_ids)?;
+                let last_transactions =
+                    transaction_repository.get_last_versions(conn, &transaction_ids)?;
+                Ok::<_, ProcessorServiceError>((clients, last_transactions))
+            })
+            .await?;
+
+        for transaction in transactions {
+            clients
+                .entry(transaction.client)
+                .or_insert_with(|| Client::new(transaction.client));
+        }
+
+        Ok((clients, last_transactions))
     }
 
     fn process_deposit(
