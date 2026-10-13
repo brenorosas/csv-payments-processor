@@ -49,12 +49,20 @@ async fn process_csv_in_batches(
 ) -> anyhow::Result<()> {
     let mut reader = csv::ReaderBuilder::new()
         .trim(csv::Trim::All)
+        .flexible(true)
         .from_path(path)?;
 
     let mut batch = Vec::with_capacity(BATCH_SIZE);
 
     for record in reader.deserialize::<TransactionCsv>() {
-        let transaction = record?;
+        let transaction = match record {
+            Ok(transaction) => transaction,
+            Err(error) if matches!(error.kind(), csv::ErrorKind::Io(_)) => return Err(error.into()),
+            Err(error) => {
+                tracing::warn!(%error, "row ignored: could not be parsed");
+                continue;
+            }
+        };
         batch.push(transaction);
         if batch.len() >= BATCH_SIZE {
             processor_service.process_transactions(&batch).await?;
