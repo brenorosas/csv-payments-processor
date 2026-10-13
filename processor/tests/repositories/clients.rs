@@ -2,14 +2,17 @@ use processor::storage::client::entity::{Client, NewClient};
 use processor::storage::client::error::ClientRepositoryError;
 use processor::storage::client::repository::{ClientRepository, SqliteClientRepository};
 
+use tokio_rusqlite::Connection;
+
 use super::setup;
 
-fn read_clients(conn: &rusqlite::Connection) -> Vec<Client> {
-    let mut stmt = conn.prepare("SELECT * FROM clients ORDER BY id").unwrap();
-    stmt.query_map([], |row| Client::try_from(row))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap()
+async fn read_clients(conn: &Connection) -> Vec<Client> {
+    conn.call(|conn| -> Result<Vec<Client>, rusqlite::Error> {
+        let mut stmt = conn.prepare("SELECT * FROM clients ORDER BY id")?;
+        stmt.query_map([], |row| Client::try_from(row))?.collect()
+    })
+    .await
+    .unwrap()
 }
 
 fn assert_stored(client: &Client, new_client: &NewClient, expected_version: u32) {
@@ -23,18 +26,18 @@ fn assert_stored(client: &Client, new_client: &NewClient, expected_version: u32)
     assert!(!client.updated_at.is_empty());
 }
 
-#[test]
-fn upsert_inserts_new_clients_and_updates_existing_ones() {
-    let conn = setup();
-    let repository = SqliteClientRepository::new(&conn);
+#[tokio::test]
+async fn upsert_inserts_new_clients_and_updates_existing_ones() {
+    let conn = setup().await;
+    let repository = SqliteClientRepository::new(conn.clone());
 
     let first = [
         NewClient::new_for_tests(1, 10_000, 2_500, 12_500, false, 1),
         NewClient::new_for_tests(2, 25_000, 0, 25_000, true, 1),
     ];
-    repository.upsert(&first).unwrap();
+    repository.upsert(&first).await.unwrap();
 
-    let stored = read_clients(&conn);
+    let stored = read_clients(&conn).await;
     assert_eq!(stored.len(), first.len());
     for (client, new_client) in stored.iter().zip(&first) {
         assert_stored(client, new_client, 1);
@@ -44,9 +47,9 @@ fn upsert_inserts_new_clients_and_updates_existing_ones() {
         NewClient::new_for_tests(1, 4_000, 6_000, 10_000, true, 1),
         NewClient::new_for_tests(3, 3_000, 0, 3_000, false, 1),
     ];
-    repository.upsert(&second).unwrap();
+    repository.upsert(&second).await.unwrap();
 
-    let stored_after = read_clients(&conn);
+    let stored_after = read_clients(&conn).await;
     assert_eq!(stored_after.len(), 3);
     assert_stored(&stored_after[0], &second[0], 2);
     assert_eq!(stored_after[0].created_at, stored[0].created_at);
@@ -54,27 +57,31 @@ fn upsert_inserts_new_clients_and_updates_existing_ones() {
     assert_stored(&stored_after[2], &second[1], 1);
 }
 
-#[test]
-fn upsert_fails_when_the_version_is_stale() {
-    let conn = setup();
-    let repository = SqliteClientRepository::new(&conn);
+#[tokio::test]
+async fn upsert_fails_when_the_version_is_stale() {
+    let conn = setup().await;
+    let repository = SqliteClientRepository::new(conn.clone());
 
     repository
         .upsert(&[
             NewClient::new_for_tests(1, 1_000, 0, 1_000, false, 1),
             NewClient::new_for_tests(2, 2_000, 0, 2_000, false, 1),
         ])
+        .await
         .unwrap();
     repository
         .upsert(&[NewClient::new_for_tests(1, 900, 0, 900, false, 1)])
+        .await
         .unwrap();
-    let before = read_clients(&conn);
+    let before = read_clients(&conn).await;
 
-    let result = repository.upsert(&[
-        NewClient::new_for_tests(2, 1_500, 500, 2_000, true, 1),
-        NewClient::new_for_tests(3, 3_000, 0, 3_000, false, 1),
-        NewClient::new_for_tests(1, 500, 0, 500, true, 1),
-    ]);
+    let result = repository
+        .upsert(&[
+            NewClient::new_for_tests(2, 1_500, 500, 2_000, true, 1),
+            NewClient::new_for_tests(3, 3_000, 0, 3_000, false, 1),
+            NewClient::new_for_tests(1, 500, 0, 500, true, 1),
+        ])
+        .await;
 
     assert!(matches!(
         result,
@@ -83,22 +90,22 @@ fn upsert_fails_when_the_version_is_stale() {
             expected: 3
         })
     ));
-    assert_eq!(read_clients(&conn), before);
+    assert_eq!(read_clients(&conn).await, before);
 }
 
-#[test]
-fn get_clients_returns_only_the_requested_existing_clients() {
-    let conn = setup();
-    let repository = SqliteClientRepository::new(&conn);
+#[tokio::test]
+async fn get_clients_returns_only_the_requested_existing_clients() {
+    let conn = setup().await;
+    let repository = SqliteClientRepository::new(conn.clone());
 
     let new_clients = [
         NewClient::new_for_tests(1, 10_000, 2_500, 12_500, false, 1),
         NewClient::new_for_tests(2, 25_000, 0, 25_000, true, 1),
         NewClient::new_for_tests(3, 3_000, 500, 3_500, false, 1),
     ];
-    repository.upsert(&new_clients).unwrap();
+    repository.upsert(&new_clients).await.unwrap();
 
-    let clients = repository.get_clients(&[1, 3, 99]).unwrap();
+    let clients = repository.get_clients(&[1, 3, 99]).await.unwrap();
 
     assert_eq!(clients.len(), 2);
     assert_stored(&clients[&1], &new_clients[0], 1);

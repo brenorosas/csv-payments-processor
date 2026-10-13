@@ -16,10 +16,10 @@ fn assert_stored(transaction: &Transaction, new_transaction: &NewTransaction) {
     assert!(!transaction.created_at.is_empty());
 }
 
-#[test]
-fn insert_then_get_last_versions_returns_the_last_version_of_the_requested_ids() {
-    let conn = setup();
-    let repository = SqliteTransactionRepository::new(&conn);
+#[tokio::test]
+async fn insert_then_get_last_versions_returns_the_last_version_of_the_requested_ids() {
+    let conn = setup().await;
+    let repository = SqliteTransactionRepository::new(conn.clone());
 
     let new_transactions = [
         NewTransaction::new_for_tests(TransactionType::Deposit, 1, 10, 1, Some(15_000)),
@@ -28,27 +28,28 @@ fn insert_then_get_last_versions_returns_the_last_version_of_the_requested_ids()
         NewTransaction::new_for_tests(TransactionType::Withdrawal, 2, 20, 1, Some(5_000)),
         NewTransaction::new_for_tests(TransactionType::Deposit, 3, 30, 1, Some(7_500)),
     ];
-    repository.insert(&new_transactions).unwrap();
+    repository.insert(&new_transactions).await.unwrap();
 
-    let transactions = repository.get_last_versions(&[10, 20, 99]).unwrap();
+    let transactions = repository.get_last_versions(&[10, 20, 99]).await.unwrap();
 
     assert_eq!(transactions.len(), 2);
     assert_stored(&transactions[&10], &new_transactions[2]);
     assert_stored(&transactions[&20], &new_transactions[3]);
 }
 
-#[test]
-fn insert_rejects_duplicated_id_and_version() {
-    let conn = setup();
-    let repository = SqliteTransactionRepository::new(&conn);
+#[tokio::test]
+async fn insert_rejects_duplicated_id_and_version() {
+    let conn = setup().await;
+    let repository = SqliteTransactionRepository::new(conn.clone());
     let transaction = NewTransaction::new_for_tests(TransactionType::Deposit, 1, 1, 1, Some(100));
 
     repository
         .insert(std::slice::from_ref(&transaction))
+        .await
         .unwrap();
 
     assert!(matches!(
-        repository.insert(&[transaction]),
+        repository.insert(&[transaction]).await,
         Err(TransactionRepositoryError::Repository(
             RepositoryError::Database(_)
         ))

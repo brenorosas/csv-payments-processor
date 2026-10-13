@@ -5,16 +5,16 @@ use rusqlite::Connection;
 use storage::client::repository::SqliteClientRepository;
 use storage::transactions::repository::SqliteTransactionRepository;
 use tempfile::NamedTempFile;
-use transaction_csv::TransactionCsv;
+use tokio_rusqlite::Connection;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let file = NamedTempFile::new()?;
-    let conn = Connection::open(file.path())?;
-    storage::db::run_migrations(&conn)?;
+    let conn = Connection::open(file.path()).await?;
+    storage::db::run_migrations(&conn).await?;
 
-    let client_repository = SqliteClientRepository::new(&conn);
-    let transaction_repository = SqliteTransactionRepository::new(&conn);
+    let client_repository = SqliteClientRepository::new(conn.clone());
+    let transaction_repository = SqliteTransactionRepository::new(conn.clone());
 
     let path = std::env::args()
         .nth(1)

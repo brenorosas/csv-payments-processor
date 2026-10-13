@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use rusqlite::Connection;
+use tokio_rusqlite::Connection;
 
-pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
+pub async fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
 
     let mut files: Vec<_> = fs::read_dir(dir)?
@@ -12,9 +12,18 @@ pub fn run_migrations(conn: &Connection) -> anyhow::Result<()> {
 
     files.sort();
 
-    for path in files {
-        conn.execute_batch(&fs::read_to_string(path)?)?;
-    }
+    let migrations = files
+        .into_iter()
+        .map(fs::read_to_string)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    conn.call(move |conn| -> Result<(), rusqlite::Error> {
+        for sql in &migrations {
+            conn.execute_batch(sql)?;
+        }
+        Ok(())
+    })
+    .await?;
 
     Ok(())
 }
