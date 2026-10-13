@@ -13,8 +13,8 @@ const BATCH_SIZE: usize = 1000;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let file = NamedTempFile::new()?;
+    storage::db::run_migrations(&rusqlite::Connection::open(file.path())?)?;
     let conn = Connection::open(file.path()).await?;
-    storage::db::run_migrations(&conn).await?;
 
     let processor_service = ProcessorService::new(
         conn,
