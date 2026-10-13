@@ -1,0 +1,5 @@
+SELECT *
+FROM clients
+WHERE id > COALESCE(?1, -1)
+ORDER BY id
+LIMIT ?2

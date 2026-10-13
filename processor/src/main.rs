@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use processor::client_csv::ClientCsv;
 use processor::processor_service::service::ProcessorService;
 use processor::storage;
 use processor::transaction_csv::TransactionCsv;
-use storage::client::repository::SqliteClientRepository;
+use storage::client::repository::{ClientRepository, SqliteClientRepository};
 use storage::transactions::repository::SqliteTransactionRepository;
 use tempfile::NamedTempFile;
 use tokio_rusqlite::Connection;
@@ -21,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
     let conn = Connection::open(file.path()).await?;
 
     let processor_service = ProcessorService::new(
-        conn,
+        conn.clone(),
         Arc::new(SqliteClientRepository),
         Arc::new(SqliteTransactionRepository),
     );
@@ -44,6 +45,28 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("database ready at {}", file.path().display());
+    if !batch.is_empty() {
+        processor_service.process_transactions(&batch).await?;
+    }
+
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(std::io::stdout());
+    writer.write_record(["client", "available", "held", "total", "locked"])?;
+    let mut after_id = None;
+    loop {
+        let clients = conn
+            .call(move |conn| SqliteClientRepository.get_clients_page(conn, after_id, BATCH_SIZE))
+            .await?;
+        for client in &clients {
+            writer.serialize(ClientCsv::from(client))?;
+        }
+        if clients.len() < BATCH_SIZE {
+            break;
+        }
+        after_id = clients.last().map(|client| client.id);
+    }
+    writer.flush()?;
+
     Ok(())
 }
