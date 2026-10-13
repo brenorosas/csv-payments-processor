@@ -1,13 +1,15 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use std::collections::HashMap;
 
-use super::entity::Transaction;
+use rusqlite::Connection;
+
+use super::entity::{NewTransaction, Transaction};
 
 const INSERT: &str = include_str!("sql/insert.sql");
-const GET_LAST_VERSION: &str = include_str!("sql/get_last_version.sql");
+const GET_LAST_VERSIONS: &str = include_str!("sql/get_last_versions.sql");
 
 pub trait TransactionRepository {
-    fn insert(&self, transaction: &Transaction) -> anyhow::Result<()>;
-    fn get_last_version(&self, transaction_id: u32) -> anyhow::Result<Option<Transaction>>;
+    fn insert(&self, transactions: &[NewTransaction]) -> anyhow::Result<()>;
+    fn get_last_versions(&self, transaction_ids: &[u32]) -> anyhow::Result<HashMap<u32, Transaction>>;
 }
 
 pub struct SqliteTransactionRepository<'a> {
@@ -21,27 +23,28 @@ impl<'a> SqliteTransactionRepository<'a> {
 }
 
 impl TransactionRepository for SqliteTransactionRepository<'_> {
-    fn insert(&self, transaction: &Transaction) -> anyhow::Result<()> {
-        self.conn.execute(
-            INSERT,
-            params![
-                transaction.r#type,
-                transaction.client_id,
-                transaction.id,
-                transaction.version,
-                transaction.amount
-            ],
-        )?;
+    fn insert(&self, transactions: &[NewTransaction]) -> anyhow::Result<()> {
+        self.conn
+            .execute(INSERT, [serde_json::to_string(transactions)?])?;
         Ok(())
     }
 
-    fn get_last_version(&self, transaction_id: u32) -> anyhow::Result<Option<Transaction>> {
-        let transaction = self
-            .conn
-            .query_row(GET_LAST_VERSION, [transaction_id], |row| {
-                Transaction::try_from(row)
-            })
-            .optional()?;
-        Ok(transaction)
+    fn get_last_versions(&self, transaction_ids: &[u32]) -> anyhow::Result<HashMap<u32, Transaction>> {
+        // The ids are passed as a JSON array and expanded in SQL with json_each.
+        let ids = transaction_ids
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let mut stmt = self.conn.prepare_cached(GET_LAST_VERSIONS)?;
+        let rows = stmt.query_map([format!("[{ids}]")], |row| Transaction::try_from(row))?;
+
+        let mut transactions = HashMap::new();
+        for transaction in rows {
+            let transaction = transaction?;
+            transactions.insert(transaction.id, transaction);
+        }
+        Ok(transactions)
     }
 }

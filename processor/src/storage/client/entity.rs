@@ -1,4 +1,5 @@
 use rusqlite::Row;
+use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Client {
@@ -9,6 +10,15 @@ pub struct Client {
     pub locked: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NewClient {
+    pub id: u16,
+    pub available_amount: i64,
+    pub held_amount: i64,
+    pub total_amount: i64,
+    pub locked: bool,
 }
 
 impl TryFrom<&Row<'_>> for Client {

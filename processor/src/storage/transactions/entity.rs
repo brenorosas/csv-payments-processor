@@ -1,7 +1,9 @@
 use rusqlite::Row;
+use serde::Serialize;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TransactionType {
     Deposit,
     Withdrawal,
@@ -46,6 +48,15 @@ pub struct Transaction {
     pub version: u32,
     pub amount: Option<i64>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NewTransaction {
+    pub r#type: TransactionType,
+    pub client_id: u16,
+    pub id: u32,
+    pub version: u32,
+    pub amount: Option<i64>,
 }
 
 impl TryFrom<&Row<'_>> for Transaction {

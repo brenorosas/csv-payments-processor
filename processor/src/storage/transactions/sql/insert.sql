@@ -1,2 +1,8 @@
 INSERT INTO transactions (type, client_id, id, version, amount)
-VALUES (?1, ?2, ?3, ?4, ?5)
+SELECT
+    value ->> 'type',
+    value ->> 'client_id',
+    value ->> 'id',
+    value ->> 'version',
+    value ->> 'amount'
+FROM json_each(?1)
