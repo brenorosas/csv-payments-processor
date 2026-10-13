@@ -472,7 +472,7 @@ impl ProcessorService {
         let parsed = Decimal::from_str(amount.trim())
             .ok()
             .and_then(|decimal| (decimal * Decimal::from(Self::AMOUNT_SCALE)).to_i64())
-            .filter(|amount| *amount >= 0);
+            .filter(|amount| *amount > 0);
 
         if parsed.is_none() {
             tracing::warn!(

@@ -19,7 +19,6 @@ fn parse(amount: &str) -> Option<i64> {
 fn parse_amount() {
     assert_eq!(parse("1"), Some(10_000));
     assert_eq!(parse("250"), Some(2_500_000));
-    assert_eq!(parse("0"), Some(0));
 
     assert_eq!(parse("1.5"), Some(15_000));
     assert_eq!(parse("1.23"), Some(12_300));
@@ -44,6 +43,10 @@ fn parse_amount() {
 
     for amount in ["-1", "-0.0001", "-250.5", "  -1  "] {
         assert_eq!(parse(amount), None, "{amount:?} is negative");
+    }
+
+    for amount in ["0", "0.0", "0.0000", "-0", "  0  "] {
+        assert_eq!(parse(amount), None, "{amount:?} is zero");
     }
 }
 
