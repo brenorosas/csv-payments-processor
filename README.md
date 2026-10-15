@@ -20,7 +20,7 @@ withdrawal, 2, 5, 3.0
 
 Rows that cannot be applied are ignored and logged as warnings on stderr, so stdout only has the CSV.
 
-**Stack:** Rust 1.95.0. SQLite is used as temporary storage: the migrations run at start and the database file is deleted at the end.
+**Stack:** Rust 1.95.0. SQLite runs in memory as temporary storage; the migrations run at start.
 
 ## Tests
 
@@ -28,7 +28,7 @@ Unit tests live together with the business logic: in the same file, or in a file
 
 ## Discussion
 
-**Memory.** SQLite is used so the CSV can be processed without keeping everything in memory: the file is read row by row and the transactions and accounts live in the database. `BATCH_SIZE` in `src/main.rs` sets how many transactions and accounts are in memory at once. It can be increased safely: bigger batches mean fewer SQLite reads and writes and lower processing time, at the cost of more memory.
+**Memory.** The CSV is read row by row, and SQLite stores the transactions and accounts. The database is in memory, so memory use grows with the number of transactions. `BATCH_SIZE` in `src/main.rs` sets how many transactions and accounts are processed at once: bigger batches mean fewer SQLite reads and writes and lower processing time, at the cost of more memory. To keep memory flat for very large inputs, the database can be moved to use a file.
 
 **Dangerous part.** Amounts are converted to integers with four decimals (`1.5` is stored as `15000`) in a 64-bit integer, so a balance above `922,337,203,685,477.5807` overflows and can break the account.
 

@@ -6,14 +6,13 @@ use processor::storage;
 use processor::transaction_csv::TransactionCsv;
 use storage::client::repository::{ClientRepository, SqliteClientRepository};
 use storage::transactions::repository::SqliteTransactionRepository;
-use tempfile::NamedTempFile;
 use tokio_rusqlite::Connection;
 
 const BATCH_SIZE: usize = 1000;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (_file, path, conn, processor_service) = setup().await?;
+    let (path, conn, processor_service) = setup().await?;
 
     process_csv_in_batches(&processor_service, &path).await?;
     print_clients(&conn).await?;
@@ -21,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn setup() -> anyhow::Result<(NamedTempFile, String, Connection, ProcessorService)> {
+async fn setup() -> anyhow::Result<(String, Connection, ProcessorService)> {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
@@ -30,11 +29,9 @@ async fn setup() -> anyhow::Result<(NamedTempFile, String, Connection, Processor
         .nth(1)
         .ok_or_else(|| anyhow::anyhow!("usage: cargo run -- transactions.csv"))?;
 
-    let file = NamedTempFile::new()?;
-    storage::db::run_migrations(&rusqlite::Connection::open(file.path())?)?;
-    let conn = Connection::open(file.path()).await?;
-    conn.call(|conn| conn.execute_batch("PRAGMA synchronous = OFF; PRAGMA journal_mode = MEMORY;"))
-        .await?;
+    let conn = Connection::open_in_memory().await?;
+    conn.call(|conn| Ok::<_, rusqlite::Error>(storage::db::run_migrations(conn)))
+        .await??;
 
     let processor_service = ProcessorService::new(
         conn.clone(),
@@ -42,7 +39,7 @@ async fn setup() -> anyhow::Result<(NamedTempFile, String, Connection, Processor
         Arc::new(SqliteTransactionRepository),
     );
 
-    Ok((file, path, conn, processor_service))
+    Ok((path, conn, processor_service))
 }
 
 async fn process_csv_in_batches(
